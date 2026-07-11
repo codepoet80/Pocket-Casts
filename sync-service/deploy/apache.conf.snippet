@@ -1,0 +1,9 @@
+# Apache: expose the Python sync service at /sync/ alongside the PHP catalog.
+# Add this inside the existing <VirtualHost> for podcasts.webosarchive.org.
+# Requires: a2enmod proxy proxy_http
+#
+# The trailing slashes matter: /sync/ -> gunicorn's / .
+
+ProxyPreserveHost On
+ProxyPass        /sync/  http://127.0.0.1:8001/
+ProxyPassReverse /sync/  http://127.0.0.1:8001/

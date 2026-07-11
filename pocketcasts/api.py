@@ -129,6 +129,26 @@ class Pocketcasts(object):
             raise Exception("Login Failed: no token in response {}".format(body))
         return True
 
+    @classmethod
+    def from_token(cls, token):
+        """Build an API client from an existing bearer token, skipping login.
+
+        Useful for services that store a token per request/session instead of
+        re-sending the user's password on every call.
+
+        Args:
+            token (str): A Pocket Casts bearer token (from ``._token`` after a login).
+
+        Returns:
+            Pocketcasts: A ready-to-use client authenticated with the given token.
+        """
+        self = cls.__new__(cls)
+        self._username = None
+        self._password = None
+        self._token = token
+        self._session = requests.Session()
+        return self
+
     def get_top_charts(self):
         """Get the top podcasts
 
@@ -326,6 +346,14 @@ class Pocketcasts(object):
             List[pocketcasts.episode.Episode]: A list of episodes
         """
         return self._episodes_from("{}/user/starred".format(self.API))
+
+    def get_history(self):
+        """Get the user's listening history (recently played episodes)
+
+        Returns:
+            List[pocketcasts.episode.Episode]: A list of episodes
+        """
+        return self._episodes_from("{}/user/history".format(self.API))
 
     def update_starred(self, podcast, episode, starred):
         """Star or unstar an episode
