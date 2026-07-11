@@ -133,11 +133,11 @@ def pull():
         pc = _client_for_token(token)
         records = []
         for pod in pc.get_subscribed_podcasts():
-            state = _episode_state(pc, pod.uuid)            # {uuid: (status, pos, starred)}
+            state = _episode_state(pc, pod.uuid)            # {uuid: (status, pos, starred, duration)}
             if not state:
                 continue
             feed_url, details = _podcast_detail_index(pc, pod.uuid)
-            for uuid, (status, pos, starred) in state.items():
+            for uuid, (status, pos, starred, duration) in state.items():
                 d = details.get(uuid)
                 if not d:
                     continue  # episode too old to be in the fetched list; skip
@@ -149,6 +149,7 @@ def pull():
                     "published": published,
                     "playingStatus": status,
                     "playedUpTo": pos,
+                    "duration": duration,
                     "starred": starred,
                 })
     except Exception as e:
@@ -157,8 +158,10 @@ def pull():
 
 
 def _episode_state(pc, podcast_uuid):
-    """Per-podcast episode state: {episode_uuid: (playingStatus, playedUpTo, starred)}.
-    Only episodes the user has interacted with (played/in-progress/starred) appear."""
+    """Per-podcast episode state: {episode_uuid: (playingStatus, playedUpTo, starred, duration)}.
+    Only episodes the user has interacted with (played/in-progress/starred) appear.
+    Duration (seconds) lets drPodder draw the in-progress bar before it has ever
+    loaded the media locally."""
     r = pc._make_req("{}/user/podcast/episodes".format(pc.API),
                      method="JSON", data={"uuid": podcast_uuid})
     out = {}
@@ -171,7 +174,11 @@ def _episode_state(pc, podcast_uuid):
             status = int(e.get("playingStatus", 0) or 0)
         except (TypeError, ValueError):
             status = 0
-        out[e["uuid"]] = (status, pos, bool(e.get("starred")))
+        try:
+            duration = int(float(e.get("duration", 0) or 0))
+        except (TypeError, ValueError):
+            duration = 0
+        out[e["uuid"]] = (status, pos, bool(e.get("starred")), duration)
     return out
 
 
