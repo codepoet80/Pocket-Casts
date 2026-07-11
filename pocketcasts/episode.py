@@ -1,5 +1,25 @@
 from datetime import datetime
 
+
+def _parse_published(value):
+    """Parse a published timestamp from either the legacy or modern API.
+
+    Legacy responses used "%Y-%m-%d %H:%M:%S"; the modern api.pocketcasts.com
+    backend returns ISO-8601 (e.g. "2026-07-05T22:00:00Z"). Returns None when
+    the value is missing or unparseable rather than raising.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    for fmt in ('%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(value, fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 class Episode(object):
     """Class for podcast episodes"""
     class PlayingStatus(object):
@@ -28,7 +48,7 @@ class Episode(object):
         self._title = kwargs.get('title', '')
         self._url = kwargs.get('url', '')
         self._duration = kwargs.get('duration', '')
-        self._published_at = datetime.strptime(kwargs.get('published_at', ''), '%Y-%m-%d %H:%M:%S')
+        self._published_at = _parse_published(kwargs.get('published_at', ''))
         self._starred = bool(kwargs.get('starred', ''))
 
         self._playing_status = kwargs.get('playing_status', Episode.PlayingStatus.Unplayed)
