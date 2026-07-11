@@ -287,24 +287,40 @@ def _resolve_podcast_uuid(pc, feed_url, title=None):
     if hit:
         return hit
 
-    # Try the user's own subscriptions first (cheap, exact url match).
+    want_title = _norm_title(title) if title else None
+
+    # Try the user's own subscriptions first: exact feed-url match (full feeds),
+    # else a title match (tiny/proxied feeds, whose url will never match).
     try:
+        title_fallback = None
         for pod in pc.get_subscribed_podcasts():
             full = pc.get_podcast(pod.uuid)
             if full.url == feed_url:
                 _cache_put(_feed_to_uuid, feed_url, pod.uuid)
                 return pod.uuid
+            if want_title and _norm_title(pod.title) == want_title:
+                title_fallback = pod.uuid
+        if title_fallback:
+            _cache_put(_feed_to_uuid, feed_url, title_fallback)
+            return title_fallback
     except Exception:
         pass
 
-    # Fall back to catalog search by title, confirming via the resolved feed url.
+    # Fall back to catalog search: prefer an exact feed-url match, else the first
+    # result whose title matches (this is the tiny-feed path — match by name).
     if title:
         try:
+            title_hit = None
             for hit_pod in pc.search_podcasts(title)[:8]:
+                if want_title and _norm_title(hit_pod.title) == want_title and not title_hit:
+                    title_hit = hit_pod.uuid
                 full = pc.get_podcast(hit_pod.uuid)
                 if full.url == feed_url:
                     _cache_put(_feed_to_uuid, feed_url, hit_pod.uuid)
                     return hit_pod.uuid
+            if title_hit:
+                _cache_put(_feed_to_uuid, feed_url, title_hit)
+                return title_hit
         except Exception:
             pass
     return None
@@ -315,7 +331,10 @@ def _strip_query(url):
 
 
 def _norm_title(t):
-    return " ".join((t or "").lower().split())
+    # Mirror the client's normTitle: unescape HTML entities, lowercase, collapse
+    # whitespace. Title is the primary sync key for tiny (proxied) feeds.
+    import html as _html
+    return " ".join(_html.unescape(t or "").lower().split())
 
 
 def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url, episode_title=None):

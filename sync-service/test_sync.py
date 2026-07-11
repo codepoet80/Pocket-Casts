@@ -81,6 +81,22 @@ check("pulled PLAYED episode present", done is not None)
 if done:
     check("pulled status played", done["playingStatus"] == 3)
 
+# --- title-only push: simulate a tiny-feed proxied enclosure that can't URL-match ---
+fake_proxied = "http://podcasts.webosarchive.org/mp3.php?ZmFrZQ=="
+r = c.post("/sync/push?token=" + token, json={"episodes": [{
+    "feedUrl": "http://podcasts.webosarchive.org/tiny.php?url=ZmFrZQ==",
+    "enclosureUrl": fake_proxied,
+    "title": "This American Life",
+    "episodeTitle": sample.title,     # only the title can resolve this one
+    "playingStatus": 3,
+    "playedUpTo": 0,
+}]})
+titleres = r.get_json()
+check("title-only push resolved by episodeTitle",
+      titleres.get("status") == "ok" and titleres["results"][0].get("ok") is True)
+if not titleres["results"][0].get("ok"):
+    print("     title-match error:", titleres["results"][0].get("error"))
+
 # --- cleanup ---
 for e in (sample, played):
     pc._make_req("{}/sync/update_episode".format(pc.API), method="JSON",
