@@ -1,10 +1,23 @@
 # nginx: expose the Python sync service at /sync/ alongside the PHP catalog.
-# Add this inside the existing `server { ... }` block for podcasts.webosarchive.org.
+# Add BOTH blocks inside the existing `server { ... }` for podcasts.webosarchive.org.
 #
-# The trailing slashes matter: /sync/ -> gunicorn's / .
+# Two things this gets right (both are easy to trip on):
+#   1. Prefix must be preserved. The Flask app serves its routes UNDER /sync/
+#      (e.g. /sync/health), so we must NOT strip the prefix. A named location's
+#      proxy_pass has no URI part, so it forwards the original URI unchanged.
+#      (A plain `proxy_pass http://127.0.0.1:8002/;` with a trailing slash WOULD
+#      strip /sync/ and Flask would 404.)
+#   2. try_files inheritance. If the server block (or `location /`) has a
+#      `try_files ... =404;`, it is inherited here and 404s /sync/* before proxying,
+#      because there's no matching file on disk. `try_files $uri @sync;` overrides it.
+#
+# Set the port to match the systemd unit's gunicorn --bind (default 8001).
 
 location /sync/ {
-    proxy_pass         http://127.0.0.1:8001/;
+    try_files $uri @sync;
+}
+location @sync {
+    proxy_pass         http://127.0.0.1:8001;
     proxy_http_version 1.1;
     proxy_set_header   Host              $host;
     proxy_set_header   X-Real-IP         $remote_addr;

@@ -2,8 +2,9 @@
 # Add this inside the existing <VirtualHost> for podcasts.webosarchive.org.
 # Requires: a2enmod proxy proxy_http
 #
-# The trailing slashes matter: /sync/ -> gunicorn's / .
+# Keep the /sync/ prefix on BOTH sides: the Flask app serves its routes under
+# /sync/, so the upstream path must stay /sync/ (do not strip it).
 
 ProxyPreserveHost On
-ProxyPass        /sync/  http://127.0.0.1:8001/
-ProxyPassReverse /sync/  http://127.0.0.1:8001/
+ProxyPass        /sync/  http://127.0.0.1:8001/sync/
+ProxyPassReverse /sync/  http://127.0.0.1:8001/sync/
