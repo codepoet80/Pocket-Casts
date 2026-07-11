@@ -43,6 +43,7 @@ _CACHE_TTL = int(os.environ.get("SYNC_CACHE_TTL", "3600"))
 _cache_lock = threading.Lock()
 _feed_to_uuid = {}          # feedUrl -> (podcast_uuid, expires_at)
 _podcast_episode_index = {}  # podcast_uuid -> ({enclosureUrl: episode_uuid}, expires_at)
+_podcast_details = {}        # podcast_uuid -> ((feed_url, {uuid: (title, enc, published)}), expires_at)
 
 
 def _cache_get(store, key):
@@ -115,42 +116,79 @@ def login():
 def pull():
     """Return the account's playback state, keyed by URL.
 
-    {status:"ok", episodes:[{feedUrl, enclosureUrl, playingStatus, playedUpTo, starred}]}
-    Sources: in-progress + history + starred, de-duplicated by enclosure URL.
+    {status:"ok", episodes:[{feedUrl, enclosureUrl, title, published, playingStatus, playedUpTo, starred}]}
+
+    Goes per subscribed podcast: Pocket Casts only exposes an episode's played /
+    in-progress state via user/podcast/episodes (which returns uuid + status +
+    position but NOT title/url), so we cross-reference each podcast's full episode
+    list to fill in enclosureUrl + title + published. This is the only way to get
+    *played* episodes (they are absent from the in-progress/history/starred lists).
     """
     token = _extract_token()
     if not token:
         return _err("missing token")
     try:
         pc = _client_for_token(token)
-        by_url = {}
-
-        def absorb(episodes, starred_flag=None):
-            for e in episodes:
-                if not e.url or e.podcast is None:
-                    continue
-                rec = by_url.setdefault(e.url, {
-                    "feedUrl": e.podcast.url,
-                    "enclosureUrl": e.url,
-                    "playingStatus": UNPLAYED,
-                    "playedUpTo": 0,
-                    "starred": False,
+        records = []
+        for pod in pc.get_subscribed_podcasts():
+            state = _episode_state(pc, pod.uuid)            # {uuid: (status, pos, starred)}
+            if not state:
+                continue
+            feed_url, details = _podcast_detail_index(pc, pod.uuid)
+            for uuid, (status, pos, starred) in state.items():
+                d = details.get(uuid)
+                if not d:
+                    continue  # episode too old to be in the fetched list; skip
+                title, enclosure, published = d
+                records.append({
+                    "feedUrl": feed_url,
+                    "enclosureUrl": enclosure,
+                    "title": title,
+                    "published": published,
+                    "playingStatus": status,
+                    "playedUpTo": pos,
+                    "starred": starred,
                 })
-                # Prefer the most-progressed status / position we see.
-                status = e.playing_status if isinstance(e.playing_status, int) else UNPLAYED
-                rec["playingStatus"] = max(rec["playingStatus"], status)
-                try:
-                    rec["playedUpTo"] = max(rec["playedUpTo"], int(e.played_up_to or 0))
-                except (TypeError, ValueError):
-                    pass
-                rec["starred"] = rec["starred"] or bool(e.starred) or bool(starred_flag)
-
-        absorb(pc.get_in_progress())
-        absorb(pc.get_history())
-        absorb(pc.get_starred(), starred_flag=True)
     except Exception as e:
         return _err("pull failed: {}".format(e))
-    return jsonify({"status": "ok", "episodes": list(by_url.values())})
+    return jsonify({"status": "ok", "episodes": records})
+
+
+def _episode_state(pc, podcast_uuid):
+    """Per-podcast episode state: {episode_uuid: (playingStatus, playedUpTo, starred)}.
+    Only episodes the user has interacted with (played/in-progress/starred) appear."""
+    r = pc._make_req("{}/user/podcast/episodes".format(pc.API),
+                     method="JSON", data={"uuid": podcast_uuid})
+    out = {}
+    for e in r.json().get("episodes", []):
+        try:
+            pos = int(e.get("playedUpTo", 0) or 0)
+        except (TypeError, ValueError):
+            pos = 0
+        try:
+            status = int(e.get("playingStatus", 0) or 0)
+        except (TypeError, ValueError):
+            status = 0
+        out[e["uuid"]] = (status, pos, bool(e.get("starred")))
+    return out
+
+
+def _podcast_detail_index(pc, podcast_uuid):
+    """(feed_url, {episode_uuid: (title, enclosureUrl, publishedDate)}) from the cache
+    host, cached. Supplies the title/url/date that user/podcast/episodes omits."""
+    cached = _cache_get(_podcast_details, podcast_uuid)
+    if cached:
+        return cached
+    raw = pc._make_req("{}/podcast/full/{}/0/3/1000".format(pc.CACHE, podcast_uuid),
+                       method="GET").json().get("podcast", {})
+    feed_url = raw.get("url", "")
+    details = {}
+    for e in raw.get("episodes", []):
+        details[e["uuid"]] = (e.get("title", ""), e.get("url", ""),
+                              (e.get("published", "") or "")[:10])
+    value = (feed_url, details)
+    _cache_put(_podcast_details, podcast_uuid, value)
+    return value
 
 
 @app.route("/sync/subscriptions")
@@ -176,7 +214,9 @@ def subscriptions():
 def push():
     """Apply device-side playback updates to the Pocket Casts account.
 
-    Body: {episodes:[{feedUrl, enclosureUrl, playingStatus, playedUpTo, title?}]}
+    Body: {episodes:[{feedUrl, enclosureUrl, playingStatus, playedUpTo, title?, episodeTitle?}]}
+      title        - the podcast (feed) title, used to resolve the podcast
+      episodeTitle - the episode title, used as a fallback to resolve the episode
     Returns per-item results so the device can retry failures:
     {status:"ok", results:[{enclosureUrl, ok, error?}]}
     """
@@ -197,7 +237,8 @@ def push():
             podcast_uuid = _resolve_podcast_uuid(pc, feed_url, item.get("title"))
             if not podcast_uuid:
                 raise Exception("could not resolve podcast for feed {}".format(feed_url))
-            episode_uuid = _resolve_episode_uuid(pc, podcast_uuid, enclosure)
+            episode_uuid = _resolve_episode_uuid(pc, podcast_uuid, enclosure,
+                                                 item.get("episodeTitle"))
             if not episode_uuid:
                 raise Exception("could not resolve episode for {}".format(enclosure))
 
@@ -269,16 +310,39 @@ def _resolve_podcast_uuid(pc, feed_url, title=None):
     return None
 
 
-def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url):
-    """Resolve an enclosure URL to a Pocket Casts episode UUID within a podcast."""
-    if not enclosure_url:
-        return None
+def _strip_query(url):
+    return url.split("?", 1)[0] if url else url
+
+
+def _norm_title(t):
+    return " ".join((t or "").lower().split())
+
+
+def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url, episode_title=None):
+    """Resolve a device episode to a Pocket Casts episode UUID within a podcast.
+
+    Tries, in order: exact enclosure URL, query-stripped enclosure URL, then
+    normalized episode title. The fallbacks absorb tracking-param drift and the
+    rare URL difference between the device's feed and Pocket Casts."""
     index = _cache_get(_podcast_episode_index, podcast_uuid)
     if index is None:
         pod = Podcast(podcast_uuid, pc)
-        index = {e.url: e.uuid for e in pc.get_podcast_episodes(pod)}
+        by_url, by_stripped, by_title = {}, {}, {}
+        for e in pc.get_podcast_episodes(pod):
+            if e.url:
+                by_url[e.url] = e.uuid
+                by_stripped[_strip_query(e.url)] = e.uuid
+            if e.title:
+                by_title[_norm_title(e.title)] = e.uuid
+        index = {"url": by_url, "stripped": by_stripped, "title": by_title}
         _cache_put(_podcast_episode_index, podcast_uuid, index)
-    return index.get(enclosure_url)
+    if enclosure_url and enclosure_url in index["url"]:
+        return index["url"][enclosure_url]
+    if enclosure_url and _strip_query(enclosure_url) in index["stripped"]:
+        return index["stripped"][_strip_query(enclosure_url)]
+    if episode_title and _norm_title(episode_title) in index["title"]:
+        return index["title"][_norm_title(episode_title)]
+    return None
 
 
 if __name__ == "__main__":

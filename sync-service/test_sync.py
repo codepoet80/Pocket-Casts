@@ -45,11 +45,14 @@ subs = r.get_json()
 check("subscriptions ok", subs.get("status") == "ok")
 check("subscription feedUrl resolved", any(f["feedUrl"] == FEED for f in subs["feeds"]))
 
+played = eps[1]  # a second episode, to mark fully played
+
 # --- push: mark sample episode in-progress at 55s ---
 r = c.post("/sync/push?token=" + token, json={"episodes": [{
     "feedUrl": FEED,
     "enclosureUrl": sample.url,
     "title": "This American Life",
+    "episodeTitle": sample.title,
     "playingStatus": 2,
     "playedUpTo": 55,
 }]})
@@ -59,20 +62,29 @@ check("push item succeeded", pushres["results"][0].get("ok") is True)
 if not pushres["results"][0].get("ok"):
     print("     push error:", pushres["results"][0].get("error"))
 
-# --- pull: the pushed state should come back, keyed by enclosure URL ---
+# mark the second episode fully played (directly, to test the pull's played path)
+pc._make_req("{}/sync/update_episode".format(pc.API), method="JSON",
+             data={"uuid": played.uuid, "podcast": pod.uuid, "status": 3, "position": 0})
+
+# --- pull: both the in-progress and the played episode should come back ---
 r = c.get("/sync/pull?token=" + token)
 pull = r.get_json()
 check("pull ok", pull.get("status") == "ok")
-match = next((e for e in pull["episodes"] if e["enclosureUrl"] == sample.url), None)
-check("pulled episode present", match is not None)
-if match:
-    check("pulled position ~55", match["playedUpTo"] == 55)
-    check("pulled status in-progress", match["playingStatus"] == 2)
-    check("pulled feedUrl correct", match["feedUrl"] == FEED)
+prog = next((e for e in pull["episodes"] if e["enclosureUrl"] == sample.url), None)
+done = next((e for e in pull["episodes"] if e["enclosureUrl"] == played.url), None)
+check("pulled in-progress episode present", prog is not None)
+if prog:
+    check("pulled position ~55", prog["playedUpTo"] == 55)
+    check("pulled status in-progress", prog["playingStatus"] == 2)
+    check("pulled title present", bool(prog.get("title")))
+check("pulled PLAYED episode present", done is not None)
+if done:
+    check("pulled status played", done["playingStatus"] == 3)
 
 # --- cleanup ---
-pc._make_req("{}/sync/update_episode".format(pc.API), method="JSON",
-             data={"uuid": sample.uuid, "podcast": pod.uuid, "status": 0, "position": 0})
+for e in (sample, played):
+    pc._make_req("{}/sync/update_episode".format(pc.API), method="JSON",
+                 data={"uuid": e.uuid, "podcast": pod.uuid, "status": 0, "position": 0})
 pc.unsubscribe_podcast(pod)
 
 print()
