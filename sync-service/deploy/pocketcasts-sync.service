@@ -10,6 +10,11 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=/var/www/podcasts/Pocket-Casts/sync-service
+# gunicorn opens a control socket under $HOME/.gunicorn; www-data's home
+# (/var/www) isn't writable. Give it a writable runtime home: systemd creates
+# /run/pocketcasts-sync owned by this service's user and cleans it up on stop.
+RuntimeDirectory=pocketcasts-sync
+Environment=HOME=/run/pocketcasts-sync
 Environment=PORT=8001
 # Optional: override the URL->UUID resolution cache TTL (seconds)
 # Environment=SYNC_CACHE_TTL=3600
