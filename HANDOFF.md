@@ -16,6 +16,35 @@ drPodder changes are on branch **`pocketcasts-sync`** so you can review before m
 
 ---
 
+## ⚠️ Design update (post-deployment findings)
+
+Testing on-device surfaced two things, now fixed:
+
+1. **Sync is TouchPad-only, on FULL feeds.** Older devices (webOS ≤2.2.4) use *tiny
+   feeds*, whose enclosure URLs are proxied through `mp3.php` (and query-stripped), so
+   they can never match Pocket Casts. The TouchPad (webOS 3.x) has modern TLS + memory, so
+   it now defaults to the **full publisher feed**, whose URLs match Pocket Casts. The sync
+   UI is hidden entirely on non-TouchPad devices.
+
+2. **Played episodes now pull correctly.** Pocket Casts doesn't expose *played* episodes in
+   the in-progress/history/starred lists — only via `user/podcast/episodes` per podcast. The
+   pull was rebuilt to go per-subscribed-podcast, so **played + in-progress both sync now**.
+   (Verified in `test_sync.py`.)
+
+### 🔴 IMPORTANT for testing: existing subscriptions must be re-added
+Podcasts already subscribed on your TouchPad were added as **tiny feeds**, so their
+enclosure URLs won't match Pocket Casts and sync will silently skip them. To test sync on
+a podcast, **remove it and re-add it on the TouchPad** (it will now subscribe as a full
+feed). New subscriptions are full feeds automatically. There is no auto-migration of
+existing tiny-feed subscriptions.
+
+### Truncation: deferred (your call)
+Very large full feeds (e.g. SYSK ~2840 episodes) aren't truncated for now. If a real feed
+chokes a TouchPad, the planned fix is a "full-but-capped" mode in `podcast-service`
+(`tiny.php?...&proxy=0&max=N`: truncate but keep original URLs). Not built yet.
+
+---
+
 ## Part 1 — What's DONE and verified ✅
 
 ### Library (`Pocket-Casts/pocketcasts/`)
