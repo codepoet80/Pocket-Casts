@@ -20,7 +20,9 @@ See README.md for the endpoint contract and deployment.
 import os
 import sys
 import time
+import base64
 import threading
+from urllib.parse import urlparse, parse_qs
 
 # Make the sibling `pocketcasts` package importable when running in-place
 # (in production you'd `pip install` the library instead).
@@ -287,18 +289,20 @@ def _resolve_podcast_uuid(pc, feed_url, title=None):
     if hit:
         return hit
 
-    want_title = _norm_title(title) if title else None
+    # Recover the real RSS URL when the device sent a tiny.php proxy URL; this is
+    # the reliable join key (Pocket Casts stores the real feed URL).
+    real_feed = _decode_proxied_url(feed_url) or feed_url
 
-    # Try the user's own subscriptions first: exact feed-url match (full feeds),
-    # else a title match (tiny/proxied feeds, whose url will never match).
+    # Try the user's own subscriptions first: exact feed-url match (against the
+    # real URL), else a tolerant title match (catalog titles differ).
     try:
         title_fallback = None
         for pod in pc.get_subscribed_podcasts():
             full = pc.get_podcast(pod.uuid)
-            if full.url == feed_url:
+            if full.url and full.url in (feed_url, real_feed):
                 _cache_put(_feed_to_uuid, feed_url, pod.uuid)
                 return pod.uuid
-            if want_title and _norm_title(pod.title) == want_title:
+            if title and _title_matches(title, pod.title):
                 title_fallback = pod.uuid
         if title_fallback:
             _cache_put(_feed_to_uuid, feed_url, title_fallback)
@@ -306,16 +310,16 @@ def _resolve_podcast_uuid(pc, feed_url, title=None):
     except Exception:
         pass
 
-    # Fall back to catalog search: prefer an exact feed-url match, else the first
-    # result whose title matches (this is the tiny-feed path — match by name).
+    # Fall back to catalog search: prefer a real-feed-url match, else a tolerant
+    # title match on the first result.
     if title:
         try:
             title_hit = None
             for hit_pod in pc.search_podcasts(title)[:8]:
-                if want_title and _norm_title(hit_pod.title) == want_title and not title_hit:
+                if not title_hit and _title_matches(title, hit_pod.title):
                     title_hit = hit_pod.uuid
                 full = pc.get_podcast(hit_pod.uuid)
-                if full.url == feed_url:
+                if full.url and full.url in (feed_url, real_feed):
                     _cache_put(_feed_to_uuid, feed_url, hit_pod.uuid)
                     return hit_pod.uuid
             if title_hit:
@@ -324,6 +328,57 @@ def _resolve_podcast_uuid(pc, feed_url, title=None):
         except Exception:
             pass
     return None
+
+
+def _decode_proxied_url(url):
+    """Recover the original URL from a podcast-service proxy URL.
+
+    drPodder subscribes to *tiny feeds*: podcast-service rewrites the RSS feed URL
+    to `tiny.php?url=<base64>&...` and every enclosure to `mp3.php?<base64>`. Those
+    proxy URLs never match Pocket Casts, which is why title matching was the only
+    join key -- and titles differ between catalogs (drPodder "Up First" vs Pocket
+    Casts "Up First from NPR"), so title matching fails.
+
+    But the ORIGINAL url is embedded as base64 in the proxy URL. Decoding it gives
+    back the real feed / enclosure URL, which DOES match Pocket Casts exactly. This
+    restores the reliable URL-keyed join for pushes from tiny-feed devices.
+
+    Returns the decoded URL, or None if `url` is not a decodable proxy URL.
+    """
+    if not url or "webosarchive.org" not in url:
+        return None
+    parsed = urlparse(url)
+    if not any(parsed.path.endswith(p) for p in ("tiny.php", "mp3.php", "image.php")):
+        return None
+    qs = parse_qs(parsed.query)
+    # tiny.php uses ?url=<b64>&max=...; mp3.php uses the bare query string as <b64>.
+    if qs.get("url"):
+        blob = qs["url"][0]
+    else:
+        blob = parsed.query.split("&", 1)[0]
+    if not blob:
+        return None
+    blob = blob.replace(" ", "+")           # a '+' can arrive space-decoded
+    blob += "=" * (-len(blob) % 4)          # restore stripped base64 padding
+    try:
+        decoded = base64.b64decode(blob).decode("utf-8", "replace")
+    except Exception:
+        return None
+    return decoded if decoded.startswith("http") else None
+
+
+def _title_matches(want, other):
+    """Tolerant podcast/feed title match. Exact after normalization, else a prefix
+    match so catalog suffixes differ gracefully ("up first" vs "up first from npr").
+    Prefix (not substring) keeps false positives low; requires a non-trivial title."""
+    if not want or not other:
+        return False
+    w, o = _norm_title(want), _norm_title(other)
+    if w == o:
+        return True
+    if len(w) >= 4 and (o.startswith(w) or w.startswith(o)):
+        return True
+    return False
 
 
 def _strip_query(url):
@@ -355,10 +410,15 @@ def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url, episode_title=None):
                 by_title[_norm_title(e.title)] = e.uuid
         index = {"url": by_url, "stripped": by_stripped, "title": by_title}
         _cache_put(_podcast_episode_index, podcast_uuid, index)
-    if enclosure_url and enclosure_url in index["url"]:
-        return index["url"][enclosure_url]
-    if enclosure_url and _strip_query(enclosure_url) in index["stripped"]:
-        return index["stripped"][_strip_query(enclosure_url)]
+    # Recover the real enclosure when the device sent an mp3.php proxy URL, then
+    # try exact, query-stripped, and finally title matching.
+    real_enc = _decode_proxied_url(enclosure_url) or enclosure_url
+    for candidate in (enclosure_url, real_enc):
+        if candidate and candidate in index["url"]:
+            return index["url"][candidate]
+    for candidate in (enclosure_url, real_enc):
+        if candidate and _strip_query(candidate) in index["stripped"]:
+            return index["stripped"][_strip_query(candidate)]
     if episode_title and _norm_title(episode_title) in index["title"]:
         return index["title"][_norm_title(episode_title)]
     return None
