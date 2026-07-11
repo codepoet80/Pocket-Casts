@@ -46,10 +46,8 @@ drPodder changes are on branch **`pocketcasts-sync`** so you can review before m
 ## Part 2 — What YOU need to do 🔲
 
 ### A. Deploy the sync service  *(you asked for help with this — happy to pair next session)*
-1. **Tell me / confirm: is the server nginx or Apache?** That picks the proxy snippet.
-   (The PHP `secrets-example.php` supports both X-Sendfile and X-Accel-Redirect, so the
-   repo alone doesn't say which is live.)
-2. Copy `sync-service/` to `/var/www/podcasts/sync/`, create the venv, install requirements.
+Server is **nginx** (confirmed) → use `deploy/nginx.conf.snippet`.
+1. Copy `sync-service/` to `/var/www/podcasts/sync/`, create the venv, install requirements.
    The service imports the `pocketcasts` lib via a `sys.path` shim to its parent — so keep
    the repo layout, or `pip install` the library into the venv.
 3. Install `deploy/pocketcasts-sync.service`, `systemctl enable --now`.
@@ -74,11 +72,12 @@ I could not run webOS, so these need your eyes:
    before (no network calls, no errors).
 
 ### C. Decisions for me to implement next (your call)
-1. **Auto-sync trigger.** Right now sync is manual ("Sync Now") + once right after sign-in.
-   I left `Prefs.pcSyncOnUpdate` (default true) but did **not** wire it into the feed-update
-   or app-launch path, to avoid touching core flows untested. Want auto-sync on launch
-   and/or after feed refresh? I'll wire it once you confirm the hook point (updater-model
-   vs app-assistant).
+1. ~~Auto-sync trigger~~ **DONE** — sync now pushes on **play**, **pause**, and episode
+   **completion** (per your instruction). Wired at two levels: the episodeDetails media-event
+   handler (play/pause/ended) and the `Player` play/pause chokepoint (covers dashboard
+   controls). Pushes only (never pulls mid-playback, so it can't clobber the live position);
+   de-duped by enclosure URL so the double-coverage is harmless. **Needs on-device confirmation**
+   that pushes fire and don't cause UI lag during playback.
 2. **Subscription import.** `/sync/subscriptions` exists and is tested, but the drPodder
    side doesn't consume it yet. Want a "Import my Pocket Casts subscriptions" button?
 3. **Base URL.** Client defaults to `http://podcasts.webosarchive.org/sync/`. Change if the
