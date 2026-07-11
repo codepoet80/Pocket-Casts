@@ -4,14 +4,16 @@ After=network.target
 
 [Service]
 Type=simple
-# Adjust User/paths to your server. Mirrors the podcast-service web root.
+# Paths assume the fork was cloned to /var/www/podcasts/Pocket-Casts (see install.sh).
+# The service runs from the repo so it can import the sibling `pocketcasts` package.
+# Adjust User/paths to your server.
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/podcasts/sync
+WorkingDirectory=/var/www/podcasts/Pocket-Casts/sync-service
 Environment=PORT=8001
 # Optional: override the URL->UUID resolution cache TTL (seconds)
 # Environment=SYNC_CACHE_TTL=3600
-ExecStart=/var/www/podcasts/sync/.venv/bin/gunicorn \
+ExecStart=/var/www/podcasts/Pocket-Casts/sync-service/.venv/bin/gunicorn \
     --workers 3 \
     --bind 127.0.0.1:8001 \
     sync_service:app

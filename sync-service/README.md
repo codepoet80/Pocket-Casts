@@ -54,28 +54,39 @@ Test against the live API (uses a real Pocket Casts account):
 POCKETCASTS_EMAIL=... POCKETCASTS_PASSWORD=... .venv/bin/python test_sync.py
 ```
 
-## Deploy (beside the PHP catalog)
+## Deploy (nginx, beside the PHP catalog)
 
-Target layout mirrors `podcast-service` at `/var/www/podcasts/`, with this service at
-`/var/www/podcasts/sync/`.
+Server is nginx; the PHP catalog lives at `/var/www/podcasts/`. Clone this repo alongside
+it and run the service from inside the repo (so it can import the `pocketcasts` package).
 
-1. Copy this `sync-service/` dir to `/var/www/podcasts/sync/` and create the venv there:
-   ```sh
-   cd /var/www/podcasts/sync
-   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-   ```
-   The library import is handled by a `sys.path` shim to the parent dir; ensure the
-   `pocketcasts` package (this repo) sits one level up, or `pip install` it into the venv.
-2. Install the systemd unit and start it:
+```sh
+# On the server, as a user that can write to /var/www/podcasts
+cd /var/www/podcasts
+git clone https://github.com/codepoet80/Pocket-Casts.git
+cd Pocket-Casts/sync-service
+bash deploy/install.sh          # creates venv, installs deps, health-checks the app
+```
+
+`install.sh` sets up the app and prints the remaining sudo steps:
+
+1. Install + start the service (unit paths already point at
+   `/var/www/podcasts/Pocket-Casts/sync-service`):
    ```sh
    sudo cp deploy/pocketcasts-sync.service /etc/systemd/system/
    sudo systemctl daemon-reload && sudo systemctl enable --now pocketcasts-sync
+   sudo systemctl status pocketcasts-sync      # confirm it's running
    ```
-3. Wire the web server to proxy `/sync/` to `127.0.0.1:8001`:
-   - **nginx** — add `deploy/nginx.conf.snippet` to the site's `server {}` block.
-   - **Apache** — add `deploy/apache.conf.snippet` to the vhost (`a2enmod proxy proxy_http`).
-   > First confirm whether the box runs nginx or Apache, then use the matching snippet.
-4. Verify: `curl https://podcasts.webosarchive.org/sync/health` → `{"status":"ok"}`.
+   If `/var/www/podcasts/Pocket-Casts` isn't owned by `www-data`, either `chown -R www-data`
+   it or change `User=`/`Group=` in the unit to the owning user.
+2. Proxy `/sync/` to gunicorn — add `deploy/nginx.conf.snippet` inside the
+   `server {}` block for `podcasts.webosarchive.org`, then:
+   ```sh
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+3. Verify: `curl https://podcasts.webosarchive.org/sync/health` → `{"status":"ok"}`
+   (also try plain `http://` — that's what the retro device uses).
+
+(An Apache snippet is in `deploy/apache.conf.snippet` if you ever need it.)
 
 ## Config / env
 
