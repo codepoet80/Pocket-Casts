@@ -18,6 +18,7 @@ Design notes:
 See README.md for the endpoint contract and deployment.
 """
 import os
+import re
 import sys
 import time
 import base64
@@ -399,6 +400,19 @@ def _norm_title(t):
     return " ".join(_html.unescape(t or "").lower().split())
 
 
+_EP_PREFIX_RE = re.compile(
+    r'^(episode|ep|part|pt|chapter|ch|no|number)?\s*#?\s*\d+\s*[:.)\-–—]\s+')
+
+
+def _strip_episode_no(nt):
+    """Mirror the client's stripEpisodeNo: drop a leading episode-number prefix
+    that some feeds carry but Pocket Casts omits ("episode 512: the fifth gate"
+    -> "the fifth gate"). Input is an already-normalized title; returns "" when
+    no letters remain, so callers ignore an empty/near-empty key."""
+    s = _EP_PREFIX_RE.sub("", nt or "")
+    return s if any(c.isalpha() for c in s) else ""
+
+
 def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url, episode_title=None):
     """Resolve a device episode to a Pocket Casts episode UUID within a podcast.
 
@@ -409,12 +423,22 @@ def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url, episode_title=None):
     if index is None:
         pod = Podcast(podcast_uuid, pc)
         by_url, by_stripped, by_title = {}, {}, {}
+        title_strip = {}   # stripped-title -> uuid; None marks an ambiguous key
         for e in pc.get_podcast_episodes(pod):
             if e.url:
                 by_url[e.url] = e.uuid
                 by_stripped[_strip_query(e.url)] = e.uuid
             if e.title:
-                by_title[_norm_title(e.title)] = e.uuid
+                nt = _norm_title(e.title)
+                by_title[nt] = e.uuid
+                st = _strip_episode_no(nt)
+                if st and st != nt:
+                    title_strip[st] = e.uuid if st not in title_strip else None
+        # Fold unambiguous stripped keys in as title fallbacks, never shadowing an
+        # exact title (matches the client's applyPull behaviour).
+        for k, v in title_strip.items():
+            if v is not None and k not in by_title:
+                by_title[k] = v
         index = {"url": by_url, "stripped": by_stripped, "title": by_title}
         _cache_put(_podcast_episode_index, podcast_uuid, index)
     # Recover the real enclosure when the device sent an mp3.php proxy URL, then
@@ -426,8 +450,13 @@ def _resolve_episode_uuid(pc, podcast_uuid, enclosure_url, episode_title=None):
     for candidate in (enclosure_url, real_enc):
         if candidate and _strip_query(candidate) in index["stripped"]:
             return index["stripped"][_strip_query(candidate)]
-    if episode_title and _norm_title(episode_title) in index["title"]:
-        return index["title"][_norm_title(episode_title)]
+    if episode_title:
+        nt = _norm_title(episode_title)
+        if nt in index["title"]:
+            return index["title"][nt]
+        st = _strip_episode_no(nt)
+        if st and st in index["title"]:
+            return index["title"][st]
     return None
 
 
