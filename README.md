@@ -1,7 +1,8 @@
 # Pocket-Casts
-[![Build Status](https://travis-ci.org/exofudge/Pocket-Casts.svg?branch=master)](https://travis-ci.org/exofudge/Pocket-Casts)
-[![Coverage Status](https://coveralls.io/repos/github/exofudge/Pocket-Casts/badge.svg?branch=master)](https://coveralls.io/github/exofudge/Pocket-Casts?branch=master)
-[![Code Climate](https://codeclimate.com/github/exofudge/Pocket-Casts/badges/gpa.svg)](https://codeclimate.com/github/exofudge/Pocket-Casts)
+
+## Archival
+
+Moved this capability into the podcast service: [https://github.com/webOSArchive/podcast-service](https://github.com/webOSArchive/podcast-service)
 
 Unofficial Pocket Casts API written in Python 3.
 ## Installation
